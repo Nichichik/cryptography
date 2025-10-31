@@ -9,6 +9,26 @@
 
 using namespace DES_Implementation;
 
+void adjust_des_parity_bits(byte_array& key) {
+    if (key.size() != 8) {
+        return;
+    }
+
+    for (size_t i = 0; i < 8; ++i) {
+        int ones = 0;
+        for (int bit = 1; bit <= 7; ++bit) {
+            if ((key[i] >> bit) & 1) {
+                ++ones;
+            }
+        }
+        if (ones % 2 == 0) {
+            key[i] |= 1;
+        } else {
+            key[i] &= 0xFE;
+        }
+    }
+}
+
 DES_Adapter::DES_Adapter() {
 }
 
@@ -16,17 +36,19 @@ byte_array DES_Adapter::apply(const byte_array& half_block, const byte_array& ro
     if (half_block.size() != 8) {
         std::cout << "DEAL round function requires a 64-bit block." << std::endl;
     }
-    auto it = m_des_cache.find(roundKey);
+    byte_array adjusted_key = roundKey; // Создаем копию
+    adjust_des_parity_bits(adjusted_key);
+    auto it = m_des_cache.find(adjusted_key);
     if (it != m_des_cache.end()) {
         return it->second->encryptBlock(half_block);
     } else {
         std::lock_guard<std::mutex> lock(m_mutex);
-        it = m_des_cache.find(roundKey);
+        it = m_des_cache.find(adjusted_key);
         if (it == m_des_cache.end()) {
             auto des = std::make_unique<DES>();
-            des->setKey(roundKey);
-            m_des_cache[roundKey] = std::move(des);
-            return m_des_cache[roundKey]->encryptBlock(half_block);
+            des->setKey(adjusted_key);
+            m_des_cache[adjusted_key] = std::move(des);
+            return m_des_cache[adjusted_key]->encryptBlock(half_block);
         } else {
             return it->second->encryptBlock(half_block);
         }
@@ -61,7 +83,8 @@ round_keys_array DEALKeyExpander::generateRoundKeys(const byte_array& masterKey)
     R.reserve(r_rounds);
 
     DES des_const;
-    byte_array const_key(8, 0x00);
+    byte_array const_key(8, 0x0F);
+    adjust_des_parity_bits(const_key);
     des_const.setKey(const_key);
 
     for (size_t i = 0; i < s_parts; ++i) {
