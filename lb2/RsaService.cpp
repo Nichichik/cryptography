@@ -70,12 +70,9 @@ std::pair<RsaPublicKey, RsaPrivateKey> RsaService::KeyGenerator::Generate() {
         big_int q = GeneratePrime();
         big_int p = future_p.get();
         while (p == q) q = GeneratePrime();
-
         std::cout << "p и q найдены. Проверяем безопасность" << std::endl;
-
         const big_int n = p * q;
         const big_int phi = (p - 1) * (q - 1);
-
         static const std::vector<big_int> exponents = {65537, 257, 17};
         big_int e;
         bool e_found = false;
@@ -86,21 +83,17 @@ std::pair<RsaPublicKey, RsaPrivateKey> RsaService::KeyGenerator::Generate() {
             do { e = PrimalityTest::GenerateRandomBigInt(3, phi - 1); }
             while (e % 2 == 0 || CryptoService::Gcd(e, phi) != 1);
         }
-
         big_int x, y;
         CryptoService::ExtendedGcd(e, phi, x, y);
         const big_int d = (x % phi + phi) % phi;
-
         if (boost::multiprecision::abs(p - q) < Sqrt(Sqrt(n))) {
             std::cout << "Ключ отвергнут: p и q слишком близки (уязвимость Ферма). Повторная попытка" << std::endl;
             continue;
         }
-
         if (d < (Sqrt(Sqrt(n)) / 3)) {
             std::cout << "Ключ отвергнут: d слишком мало (уязвимость Винера). Повторная попытка" << std::endl;
             continue;
         }
-
         std::cout << "Ключ прошел проверки безопасности." << std::endl;
         return {{n, e}, {n, d}};
     }

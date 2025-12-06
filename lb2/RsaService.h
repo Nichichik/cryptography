@@ -11,7 +11,7 @@
 #include <optional>
 #include <tuple>
 #include <future>
-#include <boost/multiprecision/gmp.hpp>// <-- Добавляем для std::async и std::future
+#include <boost/multiprecision/gmp.hpp>
 using big_int = boost::multiprecision::mpz_int;
 
 
@@ -36,13 +36,12 @@ private:
     public:
         KeyGenerator(PrimalityTestType type, double probability, int bit_length);
         std::pair<RsaPublicKey, RsaPrivateKey> Generate();
-        std::pair<RsaPublicKey, RsaPrivateKey> GenerateWeak(); // Новый метод
+        std::pair<RsaPublicKey, RsaPrivateKey> GenerateWeak();
 
 
     private:
         big_int _prime_min_val;
         big_int _prime_max_val;
-        // Методы, не меняющие состояние объекта, помечаем const
         std::tuple<big_int, big_int, big_int> _create_key_candidate() const;
         big_int GeneratePrime() const;
 
@@ -57,7 +56,7 @@ private:
         mutable std::atomic<bool> _key_found_flag;
         std::mutex _result_mutex;
         std::optional<std::pair<RsaPublicKey, RsaPrivateKey>> _found_key_pair;
-        mutable std::mutex _cout_mutex; // mutable для использования в const-методах
+        mutable std::mutex _cout_mutex;
     };
 
 public:

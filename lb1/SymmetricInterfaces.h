@@ -2,7 +2,7 @@
 // Created by Вероника on 02.10.2025.
 //
 
-
+#pragma once
 #include<iostream>
 #include <vector>
 #include <string>
@@ -12,7 +12,6 @@
 #include <map>
 #include <any>
 #include <fstream>
-
 #ifdef _OPENMP
 #include <omp.h>
 #endif

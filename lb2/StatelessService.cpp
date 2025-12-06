@@ -14,10 +14,8 @@ big_int CryptoService::ModPow(big_int base, big_int exp, const big_int& mod) {
     if (exp < 0) {
         throw std::invalid_argument("Степень не может быть отрицательной");
     }
-
     big_int result(1);
     base = (base % mod + mod) % mod;
-
     while (exp != 0) {
         if (exp % big_int(2) == big_int(1)) {
             result = (result * base) % mod;
@@ -42,7 +40,6 @@ int CryptoService::JacobiSymbol(big_int a, big_int n) {
     if (Gcd(a, n) != big_int(1)) {
         return 0;
     }
-
     int r = 1;
     if (a < 0) {
         a = -a;
@@ -50,23 +47,19 @@ int CryptoService::JacobiSymbol(big_int a, big_int n) {
             r = -r;
         }
     }
-
     a %= n;
-
     while (a != 0) {
         int t = 0;
         while (a % big_int(2) == big_int(0)) {
             t++;
             a /= big_int(2);
         }
-
         if (t % 2 == 1) {
             big_int n_mod_8 = n % big_int(8);
             if (n_mod_8 == big_int(3) || n_mod_8 == big_int(5)) {
                 r = -r;
             }
         }
-
         if (a % big_int(4) == big_int(3) && n % big_int(4) == big_int(3)) {
             r = -r;
         }

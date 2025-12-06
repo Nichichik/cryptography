@@ -11,6 +11,18 @@
 #include <omp.h>
 #endif
 
+byte_array read_file_content(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("Cannot open file for reading: " + path);
+    return byte_array((std::istreambuf_iterator<char>(in)), {});
+}
+
+void write_file_content(const std::string& path, const byte_array& data) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) throw std::runtime_error("Cannot open file for writing: " + path);
+    out.write(reinterpret_cast<const char*>(data.data()), data.size());
+}
+
 
 CipherContext::CipherContext(
         std::unique_ptr<ISymmetricCipher> algorithm,
@@ -40,7 +52,6 @@ CipherContext::CipherContext(
             iv_is_required = false;
             break;
     }
-
     if (iv_is_required) {
         if (!iv.has_value()) {
             std::cout << "This encryption mode requires an Initialization Vector (IV)." << std::endl;
@@ -48,14 +59,12 @@ CipherContext::CipherContext(
         if (iv->size() != m_algorithm->getBlockSize()) {
             std::cout << "IV size must be equal to the block size of the algorithm."<< std::endl;
         }
-
         m_iv = *iv;
 
     } else {
         if (iv.has_value()) {
             std::cout << "Warning: An IV was provided for a mode (like ECB) that does not use it. The IV will be ignored.\n";
         }
-
     }
     m_algorithm->setKey(key);
 }
@@ -63,6 +72,10 @@ CipherContext::CipherContext(
 
 void CipherContext::applyPadding(std::vector<unsigned char>& data) {
     size_t block_size = getBlockSize();
+	if (block_size <= 1) {
+        return;
+    }
+
     size_t padding_size = block_size - (data.size() % block_size);
     if (m_padding == PaddingScheme::PKCS7 && data.size() % block_size == 0) {
         padding_size = block_size;
@@ -99,6 +112,9 @@ void CipherContext::applyPadding(std::vector<unsigned char>& data) {
 
 void CipherContext::removePadding(std::vector<unsigned char>& data) {
     if (data.empty()) {
+        return;
+    }
+ 	if (getBlockSize() <= 1) {
         return;
     }
 
@@ -287,121 +303,139 @@ std::future<void> CipherContext::decrypt(const std::vector<unsigned char>& input
 
 
 std::future<void> CipherContext::encrypt(const std::string& inputFile, const std::string& outputFile) {
-    return std::async(std::launch::async, [this, inputFile, outputFile]() {
-        std::ifstream in(inputFile, std::ios::binary);
-        if (!in) {
-            std::cout << "Cannot open input file " + inputFile <<std::endl;
-        }
-        byte_array original_data((std::istreambuf_iterator<char>(in)), {});
-        in.close();
-
-        applyPadding(original_data);
-
-        const int num_threads = std::max(1u, std::thread::hardware_concurrency());//количество ядер
-        const size_t total_size = original_data.size();
-        if (total_size == 0) {
-            return;
-        }
-
-        const size_t block_size = getBlockSize();
-        size_t chunk_size = (total_size / num_threads / block_size) * block_size;//чанки из целых блоков
-        if (chunk_size == 0) {
-            chunk_size = block_size; //маленькие файлы
-        }
-
-        std::vector<std::future<byte_array>> futures;
-        size_t offset = 0;
-
-        while (offset < total_size) {
-            size_t current_chunk_size = std::min(chunk_size, total_size - offset);
-            if (offset + chunk_size > total_size) {//последний чанк
-                current_chunk_size = total_size - offset;
+    if (m_algorithm->getBlockSize() > 1 && (m_mode == CipherMode::ECB || m_mode == CipherMode::CTR)) {
+        return std::async(std::launch::async, [this, inputFile, outputFile]() {
+            std::ifstream in(inputFile, std::ios::binary);
+            if (!in) {
+                std::cout << "Cannot open input file " + inputFile << std::endl;
             }
-            if (current_chunk_size == 0) {
-                break;
+            byte_array original_data((std::istreambuf_iterator<char>(in)), {});
+            in.close();
+            const int num_threads = std::max(1u, std::thread::hardware_concurrency());
+            const size_t total_size = original_data.size();
+            if (total_size == 0) {
+                return;
+            }
+            const size_t block_size = getBlockSize();
+            size_t chunk_size = (total_size > 0 && num_threads > 0 && block_size > 0)
+                              ? (total_size / num_threads / block_size) * block_size
+                              : 0;
+            if (chunk_size == 0 && total_size > 0) {
+                chunk_size = total_size;
+            }
+            std::vector<std::future<byte_array>> futures;
+            size_t offset = 0;
+
+            while (offset < total_size) {
+                size_t current_chunk_size = std::min(chunk_size, total_size - offset);
+                if (offset + chunk_size >= total_size) {
+                    current_chunk_size = total_size - offset;
+                }
+
+                if (current_chunk_size == 0) {
+                    break;
+                }
+
+                byte_array chunk(original_data.begin() + offset, original_data.begin() + offset + current_chunk_size);
+
+                futures.push_back(std::async(std::launch::async, [this, c = std::move(chunk)]() {
+                    byte_array encrypted_chunk;
+                    encrypt(c, encrypted_chunk).get();
+                    return encrypted_chunk;
+                }));
+
+                offset += current_chunk_size;
             }
 
-            byte_array chunk(original_data.begin() + offset, original_data.begin() + offset + current_chunk_size);
+            std::ofstream out(outputFile, std::ios::binary);
+            if (!out) {
+                std::cout <<"Cannot open output file: " + outputFile << std::endl;
+            }
 
-            futures.push_back(std::async(std::launch::async, [this, c = std::move(chunk)]() {
-                byte_array encrypted_chunk;
-                encrypt(c, encrypted_chunk).get();
-                return encrypted_chunk;
-            }));
+            for (auto& fut : futures) {
+                byte_array encrypted_chunk = fut.get();
+                out.write(reinterpret_cast<const char*>(encrypted_chunk.data()), encrypted_chunk.size());
+            }
+        });
 
-            offset += current_chunk_size;
-        }
-
-        std::ofstream out(outputFile, std::ios::binary);
-        if (!out) {
-            std::cout <<"Cannot open output file: " + outputFile << std::endl;
-        }
-
-        for (auto& fut : futures) {
-            byte_array encrypted_chunk = fut.get();
-            out.write(reinterpret_cast<const char*>(encrypted_chunk.data()), encrypted_chunk.size());
-        }
-    });
+    } else {
+        return std::async(std::launch::async, [this, inputFile, outputFile]() {
+            byte_array original_data = read_file_content(inputFile);
+            byte_array encrypted_data;
+            this->encrypt(original_data, encrypted_data).get();
+            write_file_content(outputFile, encrypted_data);
+        });
+    }
 }
 
 std::future<void> CipherContext::decrypt(const std::string& inputFile, const std::string& outputFile) {
-    return std::async(std::launch::async, [this, inputFile, outputFile]() {
-        std::ifstream in(inputFile, std::ios::binary);
-        if (!in) {
-            std::cout << "Cannot open input file: " + inputFile << std::endl;
-        }
-        byte_array encrypted_data((std::istreambuf_iterator<char>(in)), {});
-        in.close();
+    if (m_algorithm->getBlockSize() > 1 && (m_mode == CipherMode::ECB || m_mode == CipherMode::CTR)) {
 
-        if (encrypted_data.empty()) {
-            return;
-        }
-        if (encrypted_data.size() % getBlockSize() != 0) {
-            std::cout << "Encrypted file size is not a multiple of block size." << std::endl;
-        }
-
-        const int num_threads = std::max(1u, std::thread::hardware_concurrency());
-        const size_t total_size = encrypted_data.size();
-        size_t chunk_size = (total_size / num_threads / getBlockSize()) * getBlockSize();
-        if (chunk_size == 0) {
-            chunk_size = getBlockSize();
-        }
-
-        std::vector<std::future<byte_array>> futures;
-        size_t offset = 0;
-
-        while (offset < total_size) {
-            size_t current_chunk_size = std::min(chunk_size, total_size - offset);
-            if (offset + chunk_size > total_size) {
-                current_chunk_size = total_size - offset;
+        return std::async(std::launch::async, [this, inputFile, outputFile]() {
+            std::ifstream in(inputFile, std::ios::binary);
+            if (!in) {
+                std::cout << "Cannot open input file: " + inputFile << std::endl;
             }
-            if (current_chunk_size == 0) {
-                break;
+            byte_array encrypted_data((std::istreambuf_iterator<char>(in)), {});
+            in.close();
+
+            if (encrypted_data.empty()) {
+                return;
+            }
+            if (encrypted_data.size() % getBlockSize() != 0) {
+                std::cout << "Encrypted file size is not a multiple of block size." << std::endl;
             }
 
-            byte_array chunk(encrypted_data.begin() + offset, encrypted_data.begin() + offset + current_chunk_size);
+            const int num_threads = std::max(1u, std::thread::hardware_concurrency());
+            const size_t total_size = encrypted_data.size();
+            const size_t block_size = getBlockSize();
+            size_t chunk_size = (total_size / num_threads / block_size) * block_size;
+            if (chunk_size == 0 && total_size > 0) {
+                chunk_size = total_size;
+            }
 
-            futures.push_back(std::async(std::launch::async, [this, c = std::move(chunk)]() {
-                byte_array decrypted_chunk;
-                decrypt(c, decrypted_chunk).get();
-                return decrypted_chunk;
-            }));
+            std::vector<std::future<byte_array>> futures;
+            size_t offset = 0;
 
-            offset += current_chunk_size;
-        }
+            while (offset < total_size) {
+                size_t current_chunk_size = std::min(chunk_size, total_size - offset);
+                if (offset + chunk_size >= total_size) {
+                    current_chunk_size = total_size - offset;
+                }
+                if (current_chunk_size == 0) {
+                    break;
+                }
 
-        byte_array decrypted_data;
-        for (auto& fut : futures) {
-            byte_array decrypted_chunk = fut.get();
-            decrypted_data.insert(decrypted_data.end(), decrypted_chunk.begin(), decrypted_chunk.end());
-        }
+                byte_array chunk(encrypted_data.begin() + offset, encrypted_data.begin() + offset + current_chunk_size);
 
-        removePadding(decrypted_data);
+                futures.push_back(std::async(std::launch::async, [this, c = std::move(chunk)]() {
+                    byte_array decrypted_chunk;
+                    decrypt(c, decrypted_chunk).get();
+                    return decrypted_chunk;
+                }));
 
-        std::ofstream out(outputFile, std::ios::binary);
-        if (!out) {
-            std::cout <<"Cannot open output file: " + outputFile << std::endl;
-        }
-        out.write(reinterpret_cast<const char*>(decrypted_data.data()), decrypted_data.size());
-    });
+                offset += current_chunk_size;
+            }
+
+            byte_array decrypted_data;
+            for (auto& fut : futures) {
+                byte_array decrypted_chunk = fut.get();
+                decrypted_data.insert(decrypted_data.end(), decrypted_chunk.begin(), decrypted_chunk.end());
+            }
+
+            std::ofstream out(outputFile, std::ios::binary);
+            if (!out) {
+                std::cout <<"Cannot open output file: " + outputFile << std::endl;
+            }
+            out.write(reinterpret_cast<const char*>(decrypted_data.data()), decrypted_data.size());
+        });
+
+    } else {
+        return std::async(std::launch::async, [this, inputFile, outputFile]() {
+            byte_array encrypted_data = read_file_content(inputFile);
+            byte_array decrypted_data;
+            this->decrypt(encrypted_data, decrypted_data).get();
+            write_file_content(outputFile, decrypted_data);
+        });
+    }
 }
